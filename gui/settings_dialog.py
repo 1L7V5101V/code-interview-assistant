@@ -12,18 +12,21 @@ import io
 from PIL import Image
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QComboBox, QFormLayout, QMessageBox, QTabWidget, QWidget
+    QPushButton, QComboBox, QFormLayout, QMessageBox, QTabWidget, QWidget, QTextEdit
 )
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QFont
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + "/..")
 import config
+from core.op_log import op_logger, format_log_text
 
 
 LANGUAGES = ["python", "java", "cpp", "c", "go", "javascript", "typescript", "rust", "swift", "kotlin"]
 HOTKEY_ACTIONS = {
     "toggle_window": "显示/隐藏窗口",
     "screenshot": "截图解题",
+    "screenshot_region": "区域截图",
     "prev_question": "上一题",
     "next_question": "下一题",
     "toggle_clickthrough": "切换点击穿透",
@@ -31,6 +34,9 @@ HOTKEY_ACTIONS = {
     "move_right": "窗口右移",
     "move_up": "窗口上移",
     "move_down": "窗口下移",
+    "new_task": "新建题目",
+    "debug_fix": "一键纠错",
+    "toggle_mode": "切换代码/问答模式",
 }
 
 
@@ -208,8 +214,8 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        tabs = QTabWidget()
-        tabs.setStyleSheet("""
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet("""
             QTabWidget::pane { border: 1px solid rgba(180,180,180,0.4); border-radius: 6px; background: #fff; }
             QTabBar::tab {
                 background: rgba(240,240,240,0.8); color: #666;
@@ -262,7 +268,7 @@ class SettingsDialog(QDialog):
         tip_label.setStyleSheet("color:#999; font-size:10px; padding:4px 0;")
         form_api.addRow(tip_label)
 
-        tabs.addTab(tab_api, "API 配置")
+        self.tabs.addTab(tab_api, "API 配置")
 
         # ── 常规设置 Tab ──
         tab_gen = QWidget()
@@ -281,7 +287,7 @@ class SettingsDialog(QDialog):
         self.txt_opacity.setPlaceholderText("0.1 ~ 1.0")
         form_gen.addRow("窗口透明度:", self.txt_opacity)
 
-        tabs.addTab(tab_gen, "常规")
+        self.tabs.addTab(tab_gen, "常规")
 
         # ── 快捷键设置 Tab ──
         tab_hk = QWidget()
@@ -296,9 +302,94 @@ class SettingsDialog(QDialog):
             form_hk.addRow(f"{label}:", edit)
             self.hotkey_edits[action] = edit
 
-        tabs.addTab(tab_hk, "快捷键")
+        self.tabs.addTab(tab_hk, "快捷键")
 
-        layout.addWidget(tabs)
+        # ── 提示词设置 Tab ──
+        tab_prompt = QWidget()
+        layout_prompt = QVBoxLayout(tab_prompt)
+        layout_prompt.setSpacing(8)
+
+        # 选择器 + 重置按钮
+        selector_row = QHBoxLayout()
+        selector_row.addWidget(QLabel("编辑提示词："))
+        self.cmb_prompt = QComboBox()
+        self.cmb_prompt.setMinimumWidth(180)
+        self.prompt_keys = list(config.PROMPT_LABELS.keys())
+        for key in self.prompt_keys:
+            self.cmb_prompt.addItem(config.PROMPT_LABELS[key])
+        self.cmb_prompt.currentIndexChanged.connect(self._on_prompt_selected)
+        selector_row.addWidget(self.cmb_prompt, stretch=1)
+
+        self.btn_prompt_reset = QPushButton("重置此项为默认")
+        self.btn_prompt_reset.clicked.connect(self._reset_current_prompt)
+        selector_row.addWidget(self.btn_prompt_reset)
+
+        self.btn_prompt_reset_all = QPushButton("重置全部")
+        self.btn_prompt_reset_all.clicked.connect(self._reset_all_prompts)
+        selector_row.addWidget(self.btn_prompt_reset_all)
+        layout_prompt.addLayout(selector_row)
+
+        # 提示词编辑框
+        self.txt_prompt = QTextEdit()
+        self.txt_prompt.setFont(QFont("Microsoft YaHei", 10))
+        self.txt_prompt.setStyleSheet("""
+            QTextEdit {
+                background: #fff; color: #222;
+                border: 1px solid rgba(160,160,160,0.5);
+                border-radius: 4px; padding: 8px;
+            }
+            QTextEdit:focus { border: 1px solid rgba(60,100,200,0.6); }
+        """)
+        self.txt_prompt.setMinimumHeight(200)
+        layout_prompt.addWidget(self.txt_prompt)
+
+        # 加载默认选中的提示词
+        self._prompt_values = {}  # 缓存当前编辑值
+        self._on_prompt_selected(0)
+
+        self.tabs.addTab(tab_prompt, "提示词")
+
+        # ── 日志 Tab ──
+        tab_log = QWidget()
+        layout_log = QVBoxLayout(tab_log)
+        layout_log.setSpacing(8)
+
+        log_btn_row = QHBoxLayout()
+        self.btn_refresh_log = QPushButton("刷新日志")
+        self.btn_refresh_log.clicked.connect(self._refresh_log)
+        log_btn_row.addWidget(self.btn_refresh_log)
+
+        self.btn_clear_log = QPushButton("清空日志")
+        self.btn_clear_log.setStyleSheet("QPushButton { background: rgba(200,60,60,0.12); color: #a33; border-color: rgba(200,60,60,0.3); } QPushButton:hover { background: rgba(200,60,60,0.22); }")
+        self.btn_clear_log.clicked.connect(self._clear_log)
+        log_btn_row.addWidget(self.btn_clear_log)
+
+        self.lbl_log_count = QLabel(f"共 {op_logger.count()} 条")
+        self.lbl_log_count.setStyleSheet("color:#999; font-size:10px;")
+        log_btn_row.addWidget(self.lbl_log_count)
+        log_btn_row.addStretch()
+        layout_log.addLayout(log_btn_row)
+
+        self.txt_log = QTextEdit()
+        self.txt_log.setReadOnly(True)
+        self.txt_log.setFont(QFont("Consolas", 9))
+        self.txt_log.setStyleSheet("""
+            QTextEdit {
+                background: #1e1e1e; color: #d4d4d4;
+                border: 1px solid rgba(160,160,160,0.5);
+                border-radius: 4px; padding: 8px;
+                font-size: 12px;
+            }
+        """)
+        self.txt_log.setMinimumHeight(300)
+        layout_log.addWidget(self.txt_log)
+
+        # 首次加载日志
+        self._refresh_log()
+
+        self.tabs.addTab(tab_log, "日志")
+
+        layout.addWidget(self.tabs)
 
         # ── 底部按钮 ──
         btn_layout = QHBoxLayout()
@@ -369,6 +460,9 @@ class SettingsDialog(QDialog):
         QMessageBox.warning(self, "失败", f"{label} 连接测试失败：{detail}")
 
     def _save(self):
+        # 保存当前正在编辑的提示词
+        self._save_current_prompt_value()
+
         hotkeys = {}
         for action, edit in self.hotkey_edits.items():
             val = edit.text().strip()
@@ -389,5 +483,81 @@ class SettingsDialog(QDialog):
         if hotkeys:
             self.cfg["hotkeys"] = hotkeys
 
+        # 保存提示词（只保存与默认值不同的）
+        prompts = {}
+        for key in self._prompt_values:
+            val = self._prompt_values[key]
+            default = config.DEFAULT_PROMPTS.get(key, "")
+            if val.strip() != default.strip():
+                prompts[key] = val
+        self.cfg["prompts"] = prompts
+
         config.save_config(self.cfg)
         self.accept()
+
+    # ── 提示词编辑 ──────────────────────────
+
+    def _on_prompt_selected(self, index: int):
+        """切换提示词选择 — 先保存当前值，再加载新值"""
+        if not hasattr(self, "txt_prompt") or not hasattr(self, "_prompt_values"):
+            return
+        # 保存当前编辑中的值
+        self._save_current_prompt_value()
+        # 加载新选中的提示词
+        key = self.prompt_keys[index]
+        if key not in self._prompt_values:
+            self._prompt_values[key] = config.get_prompt(key)
+        self.txt_prompt.setPlainText(self._prompt_values[key])
+
+    def _save_current_prompt_value(self):
+        """把当前文本框内容存入缓存"""
+        idx = self.cmb_prompt.currentIndex()
+        if idx < 0:
+            return
+        key = self.prompt_keys[idx]
+        self._prompt_values[key] = self.txt_prompt.toPlainText()
+
+    def _reset_current_prompt(self):
+        """重置当前选中的提示词为默认值"""
+        idx = self.cmb_prompt.currentIndex()
+        if idx < 0:
+            return
+        key = self.prompt_keys[idx]
+        default = config.DEFAULT_PROMPTS.get(key, "")
+        self._prompt_values[key] = default
+        self.txt_prompt.setPlainText(default)
+
+    def _reset_all_prompts(self):
+        """重置全部提示词为默认值"""
+        reply = QMessageBox.question(
+            self, "确认", "将全部提示词重置为默认值？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        for key in self.prompt_keys:
+            self._prompt_values[key] = config.DEFAULT_PROMPTS.get(key, "")
+        self._on_prompt_selected(self.cmb_prompt.currentIndex())
+
+    # ── 日志操作 ──────────────────────────
+
+    def _refresh_log(self):
+        """刷新日志面板内容"""
+        entries = op_logger.get_all()
+        self.lbl_log_count.setText(f"共 {op_logger.count()} 条")
+        text = format_log_text(entries)
+        self.txt_log.setPlainText(text)
+        # 滚动到顶部（最新条目在 reversed 列表头部）
+        from PyQt6.QtGui import QTextCursor
+        self.txt_log.moveCursor(QTextCursor.MoveOperation.Start)
+
+    def _clear_log(self):
+        """清空日志"""
+        reply = QMessageBox.question(
+            self, "确认", "清空所有日志记录？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        op_logger.clear()
+        self._refresh_log()

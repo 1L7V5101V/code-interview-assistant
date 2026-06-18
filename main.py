@@ -9,9 +9,12 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # 初始化数据库
-import core.history_manager as history_manager
+import core.task_manager as task_manager
 
-history_manager.init_db()
+task_manager.init_db()
+
+# 迁移旧数据（如果有 history.db）
+task_manager.migrate_from_old_history()
 
 # 检查 API 配置
 import config
